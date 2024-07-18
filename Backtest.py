@@ -1,42 +1,52 @@
-import yfinance as yf
+import os 
+import sys
+import time
+import datetime
 import pandas as pd
-from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import numpy as np
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
 import warnings
 warnings.filterwarnings('ignore')
 
-# Define the ticker symbol
-tickerSymbol = 'NVDA'
+i = 'gRlkn6fkjj7rD4i7eOtYIm4qDA0jhXT6uIjAEqR2EgLCI4jweygYlrtYi9vbuzhc'
+s = 'RN7Ye5lGUvsQwfNMdbLUr5Va0qwszFhZJnRQylb5HMSU6A4kgJ1AbwBNWaql021Z'
 
-# Get data for the last 2 years
-end_date = datetime.today().strftime('%Y-%m-%d')
-start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+client = Client(i,s)
 
-# Fetch the data directly
-df = yf.download(tickerSymbol, start=start_date, end=end_date)
-
-# Fix date column
-df.reset_index(inplace=True)
-df['Date'] = df['Date'].dt.strftime('%Y/%m/%d')
-
+try:
+    Coin = client.get_historical_klines(symbol = 'WIFUSDT', interval = '1h', start_str = '2 month ago UTC')
+    df = pd.DataFrame(data = Coin)
+except BinanceAPIException as e:
+    print("ERROR: DataReader.getData:", e.message)
+except AttributeError as e:
+    print("ERROR: DataReader.getData: Invalid start-time\n", e)
+else:
+    #cleaning data
+    df.columns = ["Date", "Open", "High", "Low", "Close", "volume", "close time", "quote", "trade", "1", "2", "3"]
+    df.drop(["1","2","3","quote","trade","close time", "volume"],axis = 1,inplace = True)
+    df["Open"]= df.Open.astype(float) 
+    df["Close"] = df.Close.astype(float)
+    df["Low"] = df.Low.astype(float)
+    df["High"] = df.High.astype(float)
+        
 # Assuming df is your DataFrame with OHLC data
 # Calculate 200 EMA
-df['EMA_200'] = df['Close'].ewm(span=21, min_periods=0, adjust=False).mean() #21
+df['EMA'] = df['Close'].ewm(span=55, min_periods=0, adjust=False).mean() #55
 
-# Assuming df is your DataFrame with OHLC data and 'EMA_200' already calculated
-# Convert 'Date' column to datetime if it's not already
-df['Date'] = pd.to_datetime(df['Date'])
+#Calculate the slope of EMA
+ema_values = df['EMA']
+time_intervals = df.index.astype(int).to_series().diff().fillna(1)  # calculate time intervals in seconds
 
-# Calculate daily EMA slope
-df['EMA_Slope'] = df['EMA_200'].diff() / df['Date'].diff().dt.days
+ema_slope = ema_values.diff() / time_intervals  # calculate the difference in EMA values over time intervals
 
-# Calculate month-wise average slope of EMA
-df['Month'] = df['Date'].dt.to_period('M')  # Create a column for month
-avg_slope_by_month = df.groupby('Month')['EMA_Slope'].mean()
+# Add EMA slope column to stock_data
+df['EMA_Slope'] = ema_slope
 
-# Add 'Avg Slope' column to the original DataFrame
-df['Avg Slope'] = df['Month'].map(avg_slope_by_month)
+# Fix Date column
+for i in range(len(df["Date"])):
+    df["Date"].iloc[i] = datetime.datetime.fromtimestamp(df["Date"].iloc[i]/1000)
 
 # Add 'Signal' column based on slope conditions
 df['Signal'] = ''
@@ -47,11 +57,11 @@ in_position = False
 entry_price = 0
 target_price = 0
 stop_loss = 0
-upper_limit = 0.1 # 10%
-lower_limit = 0.05 # 5%
+upper_limit = 0.08 # 0.04
+lower_limit = 0.02 # 0.02
 
 # Absolute value of slope
-slope = 0.1 #2
+slope = 0.00001 # 0.001
 
 # Search for and records entry and exit conditions
 for i in range(len(df)):
@@ -66,10 +76,10 @@ for i in range(len(df)):
             last_position = 'Long' if df['EMA_Slope'].iloc[i] <= 0 else 'Short'
 
         # Check if previous signal was Short 
-        if last_position == 'Short':
+        if last_position == 'Short': # or last_position == 'Long':
 
             # Enrty condition: if the  value of the slope exceeds a threshold (slope variable), it triggers an entry signal
-            if df['EMA_Slope'].iloc[i-1] < slope and df['EMA_Slope'].iloc[i] >= slope:
+            if df['EMA_Slope'].iloc[i] >= slope:# and df['EMA_Slope'].iloc[i-1] < slope:
 
                 # Update current position
                 df['Signal'].iloc[i] = 'Long Entry'
@@ -82,11 +92,14 @@ for i in range(len(df)):
                 target_price = entry_price + (upper_limit * entry_price) 
                 stop_loss = entry_price - (lower_limit * entry_price) 
 
+                
                 print('Long')
+                print(df['Date'].iloc[i])
                 print('Slope: ', df['EMA_Slope'].iloc[i])
                 print('Entry Price: ', entry_price)
                 print('Target Price:' , target_price)
                 print('Stop-Loss:' , stop_loss)
+                
 
                 # Update variable
                 in_position = True 
@@ -95,7 +108,7 @@ for i in range(len(df)):
         elif last_position == 'Long':
 
             # Enrty condition: if the  value of the slope exceeds a threshold (slope variable), it triggers an entry signal
-            if df['EMA_Slope'].iloc[i-1] > slope * -1 and df['EMA_Slope'].iloc[i] <= slope * -1:
+            if df['EMA_Slope'].iloc[i] <= slope * -1:# and df['EMA_Slope'].iloc[i-1] > slope * -1:
 
                 # Update current position
                 df['Signal'].iloc[i] = 'Short Entry'
@@ -108,11 +121,14 @@ for i in range(len(df)):
                 target_price = entry_price - (upper_limit * entry_price) 
                 stop_loss = entry_price + (lower_limit * entry_price)
 
+                
                 print('Short')
+                print(df['Date'].iloc[i])
                 print('Slope: ', df['EMA_Slope'].iloc[i])
                 print('Entry Price: ', entry_price)
                 print('Target Price:' , target_price)
                 print('Stop-Loss:' , stop_loss)
+                
 
                 # Update variable
                 in_position = True
@@ -201,9 +217,9 @@ for i in range(len(df)):
             profit_d.append(calc_dollar(profit, capital))
 
 # Print ending funds
-print('Ending funds: $', round(capital, 2))
-print('Profit: +', round(((capital / initial_capital)) * 10, 2), '%') if capital >= initial_capital else print('Profit: -', round(((capital / initial_capital)) * 10, 3), '%')
-print('Profit: + $', round(((capital-initial_capital)), 2), '\n') if capital >= initial_capital else print('Profit: - $', round(((initial_capital - capital)), 2), '%', '\n')
+print('\nEnding funds: $', round(capital, 2))
+print('Profit: +', round((((capital - initial_capital) / initial_capital)) * 100, 2), '%') if capital >= initial_capital else print('Profit: -', round((((capital - initial_capital) / initial_capital)) * 100, 3), '%')
+print('Profit: + $', round(((capital - initial_capital)), 2), '\n') if capital >= initial_capital else print('Profit: - $', round(((initial_capital - capital)), 2), '%', '\n')
 
 
 # This code block is just for vizualization
@@ -254,17 +270,17 @@ for i in range(len(records)):
         records['Win/Loss'].iloc[i] = 'W'
 
 # Getting statistics
-print('W/L Ratio: ', sum(records['Win/Loss'] == 'W'), '-', sum(records['Win/Loss'] == 'L'), ' | ', round((records['Win/Loss'] == 'W').mean() / (records['Win/Loss'] == 'L').mean(), 2), '%')
-print('Mean Wins: ', round( records.loc[records['Win/Loss'] == 'W', 'Profit (%)'].mean(), 2))
-print('Mean Losses: ', round(records.loc[records['Win/Loss'] == 'L', 'Profit (%)'].mean(), 2), '\n')
+print('W/L Ratio: ', sum(records['Win/Loss'] == 'W'), '-', sum(records['Win/Loss'] == 'L'), ' | ', 100 * round((records['Win/Loss'] == 'W').mean() / ((records['Win/Loss'] == 'L').mean() + (records['Win/Loss'] == 'W').mean()), 2), '%')
+print('Mean Wins: ', round(records.loc[records['Win/Loss'] == 'W', 'Profit (%)'].mean(), 2), '%')
+print('Mean Losses: ', round(records.loc[records['Win/Loss'] == 'L', 'Profit (%)'].mean(), 2), '%', '\n')
 
 # Printing records df
-print(records)
+ # print(records)
 
 # Plotting
 plt.figure(figsize=(14,7))
 plt.plot(df['Close'], label='Close Price')
-plt.plot(df['EMA_200'], label='200 EMA', color='red')
+plt.plot(df['EMA'], label='200 EMA', color='red')
 plt.plot(df['Position'], color='yellow')
 
 for i in range(1, len(df)):
@@ -283,3 +299,6 @@ plt.title('Stock Price with 200 EMA')
 plt.legend()
 plt.grid(True)
 plt.show()
+
+#with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+    #print(df)
